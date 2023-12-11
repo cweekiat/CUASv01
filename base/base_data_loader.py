@@ -1,7 +1,12 @@
 import numpy as np
-from torch.utils.data import DataLoader
+import torch
+from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 from torch.utils.data.sampler import SubsetRandomSampler
+import os
+import glob
+from PIL import Image
+from torchvision import transforms
 
 class BaseDataLoader(DataLoader):
     """
@@ -59,13 +64,62 @@ class BaseDataLoader(DataLoader):
         else:
             return DataLoader(sampler=self.valid_sampler, **self.init_kwargs)
 
-import torch
-from torch.utils.data import Dataset, DataLoader
-import os
-import glob
-from PIL import Image
-from torchvision import transforms
+class SingleImageDataset(Dataset):
+    def __init__(self, root_dir, subset, transforms=None):
+        """
+        Args:
+            root_dir (string): Root directory with all the videos organized within subfolders for each subset.
+            subset (string): One of 'train', 'val', or 'test' to specify the subset to use.
+            transforms (callable, optional): Optional transform to be applied to the sample.
+        """
+        self.root_dir = os.path.join(root_dir, subset)
+        self.transforms = transforms
+        self.data = []
+        self.labels = []     
+        
+        # Load the data paths
+        for video_folder in sorted(glob.glob(os.path.join(self.root_dir, '*'))):
+            frames = sorted(glob.glob(os.path.join(video_folder, '*.jpg')))
+            annotations = [f.replace('.jpg', '.txt') for f in frames]
+            self.data.extend(frames)
+            self.labels.extend(annotations)
 
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        # Load image
+        image = Image.open(self.data[idx])
+        
+        # Load annotation
+        label, bbox = self._load_annotation(self.labels[idx])
+        
+        # Apply transformations
+        if self.transforms:
+            image = self.transforms(image)
+        
+        # Convert annotations to tensor
+        label = torch.tensor(label, dtype=torch.float).squeeze(dim=0)
+        bbox = torch.tensor(bbox, dtype=torch.float).squeeze() 
+        return (image, label, bbox)
+
+    @staticmethod
+    def _load_annotation(annotation_path):
+        """
+        Load annotation from the .txt file.
+        Returns:
+            annotation (list): A list of lists, where each sublist contains
+                               [class, center_x, center_y, width, height].
+        """
+        label = []
+        bbox = []
+        with open(annotation_path) as f:
+            for line in f.readlines():
+                class_label, cx, cy, w, h = line.strip().split()
+                label.append([int(class_label)])
+                bbox.append([float(cx), float(cy), float(w), float(h)])
+        return label, bbox
+    
 
 class VideoFrameDataset(Dataset):
     def __init__(self, root_dir, sequence_length=8, transforms=None):
@@ -131,22 +185,22 @@ class VideoFrameDataset(Dataset):
                 objects.append([int(class_label), float(cx), float(cy), float(w), float(h)])
         return objects if objects else [[-1, 0, 0, 0, 0]]  # If no objects, return a placeholder "no object".
 
-# Applying transformations to resize the images and convert them to Tensor
-transformations = transforms.Compose([
-    transforms.Resize((384, 640)),
-    transforms.ToTensor()
-])
+# # Applying transformations to resize the images and convert them to Tensor
+# transformations = transforms.Compose([
+#     transforms.Resize((384, 640)),
+#     transforms.ToTensor()
+# ])
 
-# Create the video frame dataset
-root_dir = '../data'
-sequence_length = 8  # Number of frames in the sequence
-video_dataset = VideoFrameDataset(root_dir, sequence_length, transforms=transformations)
+# # Create the video frame dataset
+# root_dir = '../data'
+# sequence_length = 1  # Number of frames in the sequence
+# video_dataset = VideoFrameDataset(root_dir, sequence_length, transforms=transformations)
 
-# Create the DataLoader to batch and shuffle the data
-video_dataloader = DataLoader(video_dataset, batch_size=16, shuffle=False)
+# # Create the DataLoader to batch and shuffle the data
+# video_dataloader = DataLoader(video_dataset, batch_size=16, shuffle=False)
 
-# Visual checking - what the dataloader yields (disable this part for actual training)
-for images, annotations in video_dataloader:
-    print("Batch of Image Tensors (stacked sequences):", images.shape)  # Expected: [batch, sequence, channels, H, W]
-    print("Batch of Annotations:", annotations.shape)  # Expected: [batch, sequence*objects, 5]
-    break  # Just to check the first batch; remove this in actual training loop
+# # Visual checking - what the dataloader yields (disable this part for actual training)
+# for images, annotations in video_dataloader:
+#     print("Batch of Image Tensors (stacked sequences):", images.shape)  # Expected: [batch, sequence, channels, H, W]
+#     print("Batch of Annotations:", annotations.shape)  # Expected: [batch, sequence*objects, 5]
+#     break  # Just to check the first batch; remove this in actual training loop
